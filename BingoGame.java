@@ -20,143 +20,159 @@ public class BingoGame implements Serializable {
     private Date lastBingoTime;                        // 最後にビンゴが出た時刻
     private int anonymousCount = 0;                    // 名前空欄の人用のカウンター
 
-    // 🚀 各プレイヤーのカードデータをサーバー側でも管理・自動スキャンするための箱
+    // 各プレイヤーのカードデータをサーバー側でも管理・自動スキャンするための箱
     private ConcurrentHashMap<String, List<List<String>>> playerCards = new ConcurrentHashMap<>();
-    // 🚀 各プレイヤーの「待ち数字（ビンゴする番号）」を記憶する箱
+    // 各プレイヤーの「待ち数字（ビンゴする番号）」を記憶する箱
     private ConcurrentHashMap<String, List<String>> playerWaitNumbers = new ConcurrentHashMap<>();
 
     public BingoGame(String gameId, int validDays) {
+        // 💡 渡された4桁のIDをそのまま確実にセット
         this.gameId = gameId;
         this.drawnNumbers = new CopyOnWriteArrayList<>();
         this.bingoPlayers = new CopyOnWriteArrayList<>();
         this.reachPlayers = new CopyOnWriteArrayList<>();
         this.allPlayers = new CopyOnWriteArrayList<>();
-        this.lastBingoTime = new Date();
-        
+        this.lastBingoTime = null;
+
         Calendar cal = Calendar.getInstance();
         cal.add(Calendar.DAY_OF_MONTH, validDays);
         this.expireTime = cal.getTime();
     }
 
-    // プレイヤーをゲームに参加登録する
+    // 名前が空欄だった場合に自動的に「参加者1」「参加者2」と命名して登録する部品
     public synchronized String registerPlayer(String name) {
         if (name == null || name.trim().isEmpty()) {
-            char suffix = (char) ('A' + (anonymousCount % 26));
-            name = "Player-" + suffix;
-            if (anonymousCount >= 26) {
-                name += (anonymousCount / 26 + 1);
-            }
             anonymousCount++;
+            String assignedName = "参加者" + anonymousCount;
+            allPlayers.add(assignedName);
+            return assignedName;
         }
-        
-        String trimmedName = name.trim();
-        if (!allPlayers.contains(trimmedName)) {
-            allPlayers.add(trimmedName);
+        String trimmed = name.trim();
+        if (!allPlayers.contains(trimmed)) {
+            allPlayers.add(trimmed);
         }
-        return trimmedName;
+        return trimmed;
     }
 
-    // 🚀 サーブレットで生成されたカードをサーバーに登録し、その場で自動判定を走らせる
+    public int getPlayerCount() {
+        return allPlayers.size();
+    }
+
+    // 🎲 1〜75から重複なくランダムに数字を引くメイン処理
+    public void drawNumber() {
+        if (drawnNumbers.size() >= 75) return;
+
+        List<Integer> pool = new ArrayList<>();
+        for (int i = 1; i <= 75; i++) {
+            if (!drawnNumbers.contains(i)) {
+                pool.add(i);
+            }
+        }
+        java.util.Collections.shuffle(pool);
+        int chosen = pool.get(0);
+        drawnNumbers.add(chosen);
+
+        // 数字が引かれた瞬間に、全員のカードを全自動で裏スキャンして判定する
+        checkAllPlayersStatus(chosen);
+    }
+
+    // プレイヤーが参加した時にカードを登録し、即座に状態を自動判定する
     public void setPlayerCard(String name, List<List<String>> card) {
+        if (name == null || card == null) return;
         playerCards.put(name, card);
-        checkAutoReachAndBingo(name); // 参加した瞬間の初期チェック（FREEマスがあるため）
+        
+        int lastNum = drawnNumbers.isEmpty() ? 0 : drawnNumbers.get(drawnNumbers.size() - 1);
+        checkSinglePlayerStatus(name, lastNum);
     }
 
-    public List<List<String>> getPlayerCard(String name) {
-        return playerCards.get(name);
+    // 全員のカードを全自動で裏側で一括検知する処理
+    private void checkAllPlayersStatus(int currentDrawnNumber) {
+        for (String name : playerCards.keySet()) {
+            checkSinglePlayerStatus(name, currentDrawnNumber);
+        }
     }
 
-    // 🚀 【核心】全自動でリーチ・ビンゴ・待ち数字を割り出す大山さん専用ロジック
-    public void checkAutoReachAndBingo(String name) {
+    // 特定のプレイヤーのカードに「リーチ」や「ビンゴ」が起きているか全自動で調べる精密な計算
+    private void checkSinglePlayerStatus(String name, int currentDrawnNumber) {
         List<List<String>> card = playerCards.get(name);
         if (card == null) return;
 
-        // すでにビンゴしている人はスキップ
-        for (PlayerResult p : bingoPlayers) {
-            if (p.getPlayerName().equals(name)) return;
-        }
-
-        // 縦・横・斜めの全12ラインの「穴あき状況」をチェック
-        List<List<String>> lines = new ArrayList<>();
-        
-        // 横5行
+        boolean[][] hits = new boolean[5][5];
         for (int r = 0; r < 5; r++) {
-            lines.add(card.get(r));
-        }
-        // 縦5列
-        for (int c = 0; c < 5; c++) {
-            List<String> col = new ArrayList<>();
-            for (int r = 0; r < 5; r++) {
-                col.add(card.get(r).get(c));
-            }
-            lines.add(col);
-        }
-        // 斜め（右下がり）
-        List<String> slash1 = new ArrayList<>();
-        for (int i = 0; i < 5; i++) slash1.add(card.get(i).get(i));
-        lines.add(slash1);
-        
-        // 斜め（右上がり）
-        List<String> slash2 = new ArrayList<>();
-        for (int i = 0; i < 5; i++) slash2.add(card.get(i).get(4 - i));
-        lines.add(slash2);
-
-        boolean isBingo = false;
-        List<String> waitNumbers = new ArrayList<>(); // リーチ時の待ち数字リスト
-
-        // 12ラインを1本ずつ精査
-        for (List<String> line : lines) {
-            List<String> missingNumbers = new ArrayList<>();
-            for (String numStr : line) {
+            for (int c = 0; c < 5; c++) {
+                String numStr = card.get(r).get(c);
                 int num = Integer.parseInt(numStr);
-                // まだ当選していない、かつFREE(0)でもない数字を「穴あいてないリスト」に入れる
-                if (num != 0 && !drawnNumbers.contains(num)) {
-                    missingNumbers.add(numStr);
-                }
-            }
-
-            // 【ビンゴ判定】そのラインの未当選数字が 0 個なら一発ビンゴ！
-            if (missingNumbers.size() == 0) {
-                isBingo = true;
-                break;
-            }
-            // 【リーチ判定】そのラインの未当選数字が「あと1個」なら、それが待ち数字
-            else if (missingNumbers.size() == 1) {
-                String waitNum = missingNumbers.get(0);
-                if (!waitNumbers.contains(waitNum)) {
-                    waitNumbers.add(waitNum);
+                if (num == 0 || drawnNumbers.contains(num)) {
+                    hits[r][c] = true;
                 }
             }
         }
 
-        if (isBingo) {
-            // 🎉 自動ビンゴ確定！
-            addBingoPlayer(name);
-            playerWaitNumbers.remove(name);
+        List<List<String>> lines = new ArrayList<>();
+        // 横5ライン
+        for (int r = 0; r < 5; r++) {
+            List<String> line = new ArrayList<>();
+            for (int c = 0; c < 5; c++) line.add(r + "," + c);
+            lines.add(line);
+        }
+        // 縦5ライン
+        for (int c = 0; c < 5; c++) {
+            List<String> line = new ArrayList<>();
+            for (int r = 0; r < 5; r++) line.add(r + "," + c);
+            lines.add(line);
+        }
+        // ななめ2ライン
+        List<String> d1 = new ArrayList<>();
+        List<String> d2 = new ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            d1.add(i + "," + i);
+            d2.add(i + "," + (4 - i));
+        }
+        lines.add(d1);
+        lines.add(d2);
+
+        boolean holdsBingo = false;
+        List<String> waitNumbers = new ArrayList<>();
+
+        for (List<String> line : lines) {
+            int missingCount = 0;
+            String missingNumStr = "";
+
+            for (String coord : line) {
+                String[] parts = coord.split(",");
+                int r = Integer.parseInt(parts[0]);
+                int c = Integer.parseInt(parts[c]);
+                if (!hits[r][c]) {
+                    missingCount++;
+                    missingNumStr = card.get(r).get(c);
+                }
+            }
+
+            if (missingCount == 0) {
+                holdsBingo = true;
+            } else if (missingCount == 1) {
+                if (!waitNumbers.contains(missingNumStr)) {
+                    waitNumbers.add(missingNumStr);
+                }
+            }
+        }
+
+        if (holdsBingo) {
+            addBingoPlayer(name, currentDrawnNumber);
         } else if (!waitNumbers.isEmpty()) {
-            // 🔥 自動リーチ確定！待ち数字を記憶
             playerWaitNumbers.put(name, waitNumbers);
             addReachPlayer(name);
         } else {
-            // まだ何でもない状態ならリストから外す
             playerWaitNumbers.remove(name);
             removeReachPlayer(name);
         }
     }
 
-    // 🚀 番号が引かれた時、全プレイヤーのカードを裏で一斉に自動スキャンする命令
-    public void checkAllPlayers() {
-        for (String name : allPlayers) {
-            checkAutoReachAndBingo(name);
-        }
-    }
-
-    // ビンゴ登録（自動判定から呼ばれる）
-    private void addBingoPlayer(String name) {
+    // ビンゴ達成者を記録する（最新が先頭に入る仕様）
+    private void addBingoPlayer(String name, int currentDrawnNumber) {
         for (PlayerResult p : bingoPlayers) {
             if (p.getPlayerName().equals(name)) return;
         }
-        int currentDrawnNumber = drawnNumbers.isEmpty() ? 0 : drawnNumbers.get(drawnNumbers.size() - 1);
         Date now = new Date();
         bingoPlayers.add(0, new PlayerResult(name, now, currentDrawnNumber));
         this.lastBingoTime = now;
@@ -193,7 +209,4 @@ public class BingoGame implements Serializable {
     public List<Integer> getDrawnNumbers() { return drawnNumbers; }
     public List<PlayerResult> getBingoPlayers() { return bingoPlayers; }
     public List<PlayerResult> getReachPlayers() { return reachPlayers; }
-    public List<String> getAllPlayers() { return allPlayers; }
-    public int getPlayerCount() { return allPlayers.size(); }
-    public Date getExpireTime() { return expireTime; }
 }
