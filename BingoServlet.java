@@ -14,32 +14,22 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
 
-@WebServlet(\"/BingoServlet\")
+@WebServlet("/BingoServlet")
 public class BingoServlet extends HttpServlet {
     private static final long serialVersionUID = 1L;
 
     protected void doGet(HttpServletRequest request, HttpServletResponse response) 
             throws ServletException, IOException {
         
-        request.setCharacterEncoding(\"UTF-8\");
-        String action = request.getParameter(\"action\");
+        request.setCharacterEncoding("UTF-8");
+        String action = request.getParameter("action");
         ServletContext application = getServletContext();
         HttpSession session = request.getSession();
         
-        BingoGame game = (BingoGame) application.getAttribute(\"game\");
+        BingoGame game = (BingoGame) application.getAttribute("game");
 
-        // ⏱️ 1. 定期自動期限チェック
-        // すでに部屋が存在している場合のみ、期限切れチェックを行います。
-        if (game != null) {
-            if (game.isExpired() || game.isPast2HoursFromLastBingo()) {
-                application.removeAttribute(\"game");
-                game = null;
-            }
-        }
-
-        // 🚀 2. 【改善ポイント】「新しい部屋を作る」ボタンが押された時だけ部屋を作成する
-        if (\"create\".equals(action)) {
-            String validDaysStr = request.getParameter(\"validDays\");
+        if ("create".equals(action)) {
+            String validDaysStr = request.getParameter("validDays");
             int validDays = 8; 
             if (validDaysStr != null) {
                 try {
@@ -49,143 +39,124 @@ public class BingoServlet extends HttpServlet {
                 }
             }
             
-            // 参加者が入力しやすい「簡単な4桁の数字」を全自動で抽選
-            List<Integer> pool = new ArrayList<>();
-            for (int i = 1000; i <= 9999; i++) { pool.add(i); }
-            Collections.shuffle(pool);
-            String randomId = String.valueOf(pool.get(0));
+            // 💡 参加者が入力しやすい「簡単な4桁の数字」を全自動で抽選する仕組み
+            String newGameId = "1111"; // 万が一のための初期値
             
-            // ここで初めて新しくゲームを作成してサーバーに保存
-            game = new BingoGame(randomId, validDays);
-            application.setAttribute(\"game", game);
-            
-            // 司会者をログイン状態にして管理画面へ飛ばす
-            session.setAttribute(\"role\", \"admin\");
-            response.sendRedirect(\"BingoServlet?action=admin\");
-            return;
-        }
-
-        // 🛑 3. 【改善ポイント】ボタンを押す前の初期状態（まだ部屋がない）なら、勝手に作らずログイン前画面を出す
-        if (game == null) {
-            request.setAttribute(\"game\", null);
-            request.getRequestDispatcher(\"index.jsp\").forward(request, response);
-            return;
-        }
-
-        // --- 💡 これ以降のゲーム進行ロジック、レイアウト連携は元のコードのまま一切変えていません 💡 ---
-
-        // 3. 司会者：管理画面の表示要求
-        if (\"admin\".equals(action)) {
-            String role = (String) session.getAttribute(\"role\");
-            if (!\"admin\".equals(role)) {
-                request.setAttribute(\"error\", \"⚠️ 司会者としての権限がありません。\");
-                request.setAttribute(\"game\", game);
-                request.getRequestDispatcher(\"index.jsp\").forward(request, response);
-                return;
-            }
-            request.setAttribute(\"game\", game);
-            request.getRequestDispatcher(\"admin.jsp\").forward(request, response);
-            return;
-        }
-
-        // 4. 司会者：数字の抽選（ドロー）
-        if (\"draw\".equals(action)) {
-            String role = (String) session.getAttribute(\"role\");
-            if (\"admin\".equals(role)) {
-                List<Integer> drawn = game.getDrawnNumbers();
-                if (drawn.size() < 75) {
-                    List<Integer> allNumbers = new ArrayList<>();
-                    for (int i = 1; i <= 75; i++) {
-                        if (!drawn.contains(i)) { allNumbers.add(i); }
-                    }
-                    Collections.shuffle(allNumbers);
-                    int luckyNumber = allNumbers.get(0);
-                    drawn.add(luckyNumber);
-                }
-            }
-            response.sendRedirect(\"BingoServlet?action=admin\");
-            return;
-        }
-
-        // 5. 司会者：ゲームのリセット（初期化）
-        if (\"reset\".equals(action)) {
-            String role = (String) session.getAttribute(\"role\");
-            if (\"admin\".equals(role)) {
-                application.removeAttribute(\"game\");
-                session.removeAttribute(\"role\");
-            }
-            response.sendRedirect(\"BingoServlet\");
-            return;
-        }
-
-        // 6. プレイヤー：名前と部屋番号を入力して参加（カード生成）
-        if (\"join\".equals(action)) {
-            String inputGameId = request.getParameter(\"gameId\");
-            String inputName = request.getParameter(\"playerName\");
-            
-            if (inputName == null || inputName.trim().isEmpty()) {
-                inputName = \"匿名希望\";
+            // 10%の確率で「1111」「2222」などの完全なゾロ目か「1000」「2000」などの超キリ番にする
+            if (Math.random() < 0.10) {
+                String[] easyNumbers = {
+                    "1111", "2222", "3333", "4444", "5555", "6666", "7777", "8888", "9999",
+                    "1000", "2000", "3000", "4000", "5000", "6000", "7000", "8000", "9000",
+                    "1234", "5678", "7788", "1122", "5566"
+                };
+                int idx = (int)(Math.random() * easyNumbers.length);
+                newGameId = easyNumbers[idx];
             } else {
-                inputName = inputName.trim();
+                // 90%の確率は、1000〜9999の普通のランダムな4桁の数字
+                int random4Digit = (int)(Math.random() * 9000) + 1000;
+                newGameId = String.valueOf(random4Digit);
             }
             
-            if (game.getGameId().equals(inputGameId)) {
-                String confirmedName = inputName;
-                
-                if (!game.getAllPlayers().contains(confirmedName)) {
-                    game.getAllPlayers().add(confirmedName);
+            game = new BingoGame(newGameId, validDays);
+            application.setAttribute("game", game);
+            
+            request.setAttribute("game", game);
+            request.getRequestDispatcher("admin.jsp").forward(request, response);
+            return;
+        }
+
+        if ("reset".equals(action)) {
+            application.removeAttribute("game");
+            response.sendRedirect("admin.jsp");
+            return;
+        }
+
+        if (game != null) {
+            if (game.isExpired() || game.isPast2HoursFromLastBingo()) {
+                application.removeAttribute("game");
+                game = null;
+            }
+        }
+
+        if ("draw".equals(action)) {
+            if (game != null) {
+                game.drawNumber();
+            }
+            request.setAttribute("game", game);
+            request.getRequestDispatcher("admin.jsp").forward(request, response);
+            return;
+        }
+
+        if ("join".equals(action)) {
+            String inputId = request.getParameter("gameId");
+            String playerName = request.getParameter("playerName");
+            
+            if (playerName == null || playerName.trim().isEmpty()) {
+                playerName = "";
+            } else {
+                playerName = playerName.trim();
+            }
+
+            if (game != null && game.getGameId().equals(inputId)) {
+                String confirmedName = (String) session.getAttribute("myConfirmedName");
+                List<List<String>> bingoCard = (List<List<String>>) session.getAttribute("card");
+
+                if (confirmedName == null || !confirmedName.equals(playerName) || bingoCard == null) {
+                    confirmedName = game.registerPlayer(playerName);
                     
                     List<List<String>> card = new ArrayList<>();
                     List<List<Integer>> columns = new ArrayList<>();
-                    int[][] ranges = { {1,15}, {16,30}, {31,45}, {46,60}, {61,75} };
                     
                     for (int i = 0; i < 5; i++) {
                         List<Integer> pool = new ArrayList<>();
-                        for (int n = ranges[i][0]; n <= ranges[i][1]; n++) { pool.add(n); }
+                        for (int j = 1; j <= 15; j++) {
+                            pool.add(i * 15 + j);
+                        }
                         Collections.shuffle(pool);
                         columns.add(pool.subList(0, 5));
                     }
-                    
+
                     for (int r = 0; r < 5; r++) {
                         List<String> row = new ArrayList<>();
                         for (int c = 0; c < 5; c++) {
-                            if (r == 2 && c == 2) { row.add(\"0\"); } 
-                            else { row.add(String.valueOf(columns.get(c).get(r))); }
+                            if (r == 2 && c == 2) {
+                                row.add("0"); 
+                            } else {
+                                row.add(String.valueOf(columns.get(c).get(r)));
+                            }
                         }
                         card.add(row);
                     }
                     
-                    session.setAttribute(\"card\", card);
-                    session.setAttribute(\"myConfirmedName\", confirmedName);
-                } else {
-                    session.setAttribute(\"myConfirmedName\", confirmedName);
+                    session.setAttribute("card", card);
+                    session.setAttribute("myConfirmedName", confirmedName);
                 }
                 
-                List<List<String>> currentCard = (List<List<String>>) session.getAttribute(\"card\");
+                List<List<String>> currentCard = (List<List<String>>) session.getAttribute("card");
                 game.setPlayerCard(confirmedName, currentCard);
                 
-                request.setAttribute(\"game\", game);
-                request.setAttribute(\"confirmedPlayerName\", confirmedName);
-                request.getRequestDispatcher(\"index.jsp\").forward(request, response);
+                request.setAttribute("game", game);
+                request.setAttribute("confirmedPlayerName", confirmedName);
+                request.getRequestDispatcher("index.jsp").forward(request, response);
             } else {
-                request.setAttribute(\"error\", \"⚠️ 部屋番号（ゲームID）が正しくありません。\");
-                request.getRequestDispatcher(\"index.jsp\").forward(request, response);
+                request.setAttribute("error", "⚠️ 部屋番号（ゲームID）が正しくありません。");
+                request.getRequestDispatcher("index.jsp").forward(request, response);
             }
             return;
         }
 
-        String userType = request.getParameter(\"userType\");
-        request.setAttribute(\"game\", game);
+        String userType = request.getParameter("userType");
+        request.setAttribute("game", game);
         
-        if (\"admin\".equals(userType)) {
-            request.getRequestDispatcher(\"admin.jsp\").forward(request, response);
+        if ("admin".equals(userType)) {
+            request.getRequestDispatcher("admin.jsp").forward(request, response);
         } else {
-            String confirmedName = (String) session.getAttribute(\"myConfirmedName\");
+            String confirmedName = (String) session.getAttribute("myConfirmedName");
             if (confirmedName == null) {
-                confirmedName = request.getParameter(\"playerName\");
+                confirmedName = request.getParameter("playerName");
             }
-            request.setAttribute(\"confirmedPlayerName\", confirmedName);
-            request.getRequestDispatcher(\"index.jsp\").forward(request, response);
+            request.setAttribute("confirmedPlayerName", confirmedName);
+            request.getRequestDispatcher("index.jsp").forward(request, response);
         }
     }
 
